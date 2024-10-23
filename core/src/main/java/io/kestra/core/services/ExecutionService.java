@@ -17,6 +17,7 @@ import io.kestra.core.models.tasks.Task;
 import io.kestra.core.models.tasks.retrys.AbstractRetry;
 import io.kestra.core.queues.QueueFactoryInterface;
 import io.kestra.core.queues.QueueInterface;
+import io.kestra.core.repositories.ArrayListTotal;
 import io.kestra.core.repositories.ExecutionRepositoryInterface;
 import io.kestra.core.repositories.FlowRepositoryInterface;
 import io.kestra.core.repositories.LogRepositoryInterface;
@@ -30,6 +31,7 @@ import io.kestra.plugin.core.flow.Pause;
 import io.kestra.plugin.core.flow.WorkingDirectory;
 import io.micronaut.context.event.ApplicationEventPublisher;
 import io.micronaut.core.annotation.Nullable;
+import io.micronaut.data.model.Pageable;
 import io.micronaut.http.multipart.CompletedPart;
 import jakarta.inject.Inject;
 import jakarta.inject.Named;
@@ -93,18 +95,48 @@ public class ExecutionService {
     @Inject
     private ApplicationEventPublisher<CrudEvent<Execution>> eventPublisher;
 
-    public Execution getExecutionIfPause(final String tenant, final @NotNull String executionId) {
-        Optional<Execution> maybeExecution = executionRepository.findById(tenant, executionId);
-        if (maybeExecution.isEmpty()) {
-            throw new NoSuchElementException("Execution '"+ executionId + "' not found.");
-        }
+    public Execution getExecution(final String tenant,
+                                  final @NotNull String executionId,
+                                  final boolean withACL) {
+        Optional<Execution> maybeExecution = withACL ?
+            executionRepository.findById(tenant, executionId) :
+            executionRepository.findByIdWithoutAcl(tenant, executionId);
 
-        var execution = maybeExecution.get();
+        return maybeExecution
+            .orElseThrow(() -> new NoSuchElementException("Execution '"+ executionId + "' not found."));
+    }
+
+    public Execution getExecutionIfPause(final String tenant,
+                                         final @NotNull String executionId,
+                                         final boolean withACL) {
+        Execution execution = getExecution(tenant, executionId, withACL);
+
         if (!execution.getState().isPaused()) {
             throw new IllegalStateException("Execution '"+ executionId + "' is not paused, can't resume it");
         }
 
         return execution;
+    }
+
+    public Optional<Execution> findFirstExecutionFor(final String tenant,
+                                                     final String namespace,
+                                                     final String flowId,
+                                                     final List<State.Type> states) {
+        ArrayListTotal<Execution> executions = executionRepository.find(
+            Pageable.from(1, 1),
+            null,
+            tenant,
+            null,
+            namespace,
+            flowId,
+            null,
+            null,
+            states,
+            null,
+            null,
+            null
+        );
+        return executions.stream().findFirst();
     }
 
     /**
@@ -452,7 +484,28 @@ public class ExecutionService {
     }
 
     /**
+     * Validates the inputs for an execution to be resumed.
+     * <p>
+     * The execution must be paused or this call will be a no-op.
+     *
+     * @param execution the execution to resume
+     * @param flow      the flow of the execution
+     * @return the execution in the new state.
+     */
+    public Mono<List<InputAndValue>> validateForResume(final Execution execution, Flow flow) {
+        return getFirstPausedTaskOr(execution, flow)
+            .flatMap(task -> {
+                if (task.isPresent() && task.get() instanceof Pause pauseTask) {
+                    return Mono.just(flowInputOutput.resolveInputs(pauseTask.getOnResume(), execution, Map.of()));
+                } else {
+                    return Mono.just(Collections.emptyList());
+                }
+            });
+    }
+
+    /**
      * Resume a paused execution to a new state.
+     * <p>
      * The execution must be paused or this call will be a no-op.
      *
      * @param execution the execution to resume
