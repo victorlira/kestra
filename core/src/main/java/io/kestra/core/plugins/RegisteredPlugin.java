@@ -2,8 +2,10 @@ package io.kestra.core.plugins;
 
 import io.kestra.core.models.annotations.PluginSubGroup;
 import io.kestra.core.models.conditions.Condition;
-import io.kestra.core.models.tasks.runners.TaskRunner;
+import io.kestra.core.models.dashboards.DataFilter;
+import io.kestra.core.models.dashboards.charts.Chart;
 import io.kestra.core.models.tasks.Task;
+import io.kestra.core.models.tasks.runners.TaskRunner;
 import io.kestra.core.models.triggers.AbstractTrigger;
 import io.kestra.core.secret.SecretPluginInterface;
 import io.kestra.core.storages.StorageInterface;
@@ -36,12 +38,14 @@ public class RegisteredPlugin {
     private final List<Class<? extends StorageInterface>> storages;
     private final List<Class<? extends SecretPluginInterface>> secrets;
     private final List<Class<? extends TaskRunner>> taskRunners;
+    private final List<Class<? extends Chart<?, ?>>> charts;
+    private final List<Class<? extends DataFilter<?>>> dataFilters;
     private final List<String> guides;
     // Map<lowercasealias, <Alias, Class>>
     private final Map<String, Map.Entry<String, Class<?>>> aliases;
 
     public boolean isValid() {
-        return !tasks.isEmpty() || !triggers.isEmpty() || !conditions.isEmpty() || !storages.isEmpty() || !secrets.isEmpty() || !taskRunners.isEmpty();
+        return !tasks.isEmpty() || !triggers.isEmpty() || !conditions.isEmpty() || !storages.isEmpty() || !secrets.isEmpty() || !taskRunners.isEmpty() || !charts.isEmpty() || !dataFilters.isEmpty();
     }
 
     public boolean hasClass(String cls) {
@@ -85,6 +89,14 @@ public class RegisteredPlugin {
             return TaskRunner.class;
         }
 
+        if (this.getCharts().stream().anyMatch(r -> r.getName().equals(cls))) {
+            return Chart.class;
+        }
+
+        if (this.getDataFilters().stream().anyMatch(r -> r.getName().equals(cls))) {
+            return DataFilter.class;
+        }
+
         if(this.getAliases().containsKey(cls.toLowerCase())) {
             // This is a quick-win, but it may trigger an infinite loop ... or not ...
             return baseClass(this.getAliases().get(cls.toLowerCase()).getValue().getName());
@@ -112,6 +124,8 @@ public class RegisteredPlugin {
         result.put("storages", Arrays.asList(this.getStorages().toArray(Class[]::new)));
         result.put("secrets", Arrays.asList(this.getSecrets().toArray(Class[]::new)));
         result.put("task-runners", Arrays.asList(this.getTaskRunners().toArray(Class[]::new)));
+        result.put("charts", Arrays.asList(this.getCharts().toArray(Class[]::new)));
+        result.put("data-filters", Arrays.asList(this.getDataFilters().toArray(Class[]::new)));
 
         return result;
     }
@@ -279,6 +293,18 @@ public class RegisteredPlugin {
         if (!this.getTaskRunners().isEmpty()) {
             b.append("[Task Runners: ");
             b.append(this.getTaskRunners().stream().map(Class::getName).collect(Collectors.joining(", ")));
+            b.append("] ");
+        }
+
+        if (!this.getCharts().isEmpty()) {
+            b.append("[Charts: ");
+            b.append(this.getCharts().stream().map(Class::getName).collect(Collectors.joining(", ")));
+            b.append("] ");
+        }
+
+        if (!this.getDataFilters().isEmpty()) {
+            b.append("[DataFilters: ");
+            b.append(this.getDataFilters().stream().map(Class::getName).collect(Collectors.joining(", ")));
             b.append("] ");
         }
 

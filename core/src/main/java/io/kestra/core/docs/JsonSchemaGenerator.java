@@ -16,11 +16,13 @@ import com.github.victools.jsonschema.module.jakarta.validation.JakartaValidatio
 import com.github.victools.jsonschema.module.jakarta.validation.JakartaValidationOption;
 import com.github.victools.jsonschema.module.swagger2.Swagger2Module;
 import com.google.common.collect.ImmutableMap;
-import io.kestra.core.models.property.Property;
 import io.kestra.core.models.annotations.Plugin;
 import io.kestra.core.models.annotations.PluginProperty;
 import io.kestra.core.models.conditions.Condition;
 import io.kestra.core.models.conditions.ScheduleCondition;
+import io.kestra.core.models.dashboards.DataFilter;
+import io.kestra.core.models.dashboards.charts.Chart;
+import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.Output;
 import io.kestra.core.models.tasks.Task;
 import io.kestra.core.models.tasks.common.EncryptedString;
@@ -30,14 +32,12 @@ import io.kestra.core.plugins.PluginRegistry;
 import io.kestra.core.plugins.RegisteredPlugin;
 import io.kestra.core.serializers.JacksonMapper;
 import io.micronaut.core.annotation.Nullable;
+import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.*;
 import java.time.Duration;
 import java.util.*;
 import java.util.function.Predicate;
@@ -326,11 +326,20 @@ public class JsonSchemaGenerator {
                 }
             });
 
-        // PluginProperty additionalProperties
         builder.forFields().withAdditionalPropertiesResolver(target -> {
             PluginProperty pluginPropertyAnnotation = target.getAnnotationConsideringFieldAndGetter(PluginProperty.class);
+            Schema schemaAnnotation = target.getAnnotationConsideringFieldAndGetter(Schema.class);
+            Content contentAnnotation = target.getAnnotationConsideringFieldAndGetter(Content.class);
+            Schema contentSchemaAnnotation = contentAnnotation == null ? null : contentAnnotation.additionalPropertiesSchema();
+
             if (pluginPropertyAnnotation != null) {
                 return pluginPropertyAnnotation.additionalProperties();
+            } else if (target.getType().isInstanceOf(Map.class)) {
+                return target.getTypeParameterFor(Map.class, 1);
+            } else if (schemaAnnotation != null && schemaAnnotation.additionalPropertiesSchema() != Void.class) {
+                return schemaAnnotation.additionalPropertiesSchema();
+            } else if (contentSchemaAnnotation != null && contentSchemaAnnotation.additionalPropertiesSchema() != Void.class) {
+                return contentSchemaAnnotation.additionalPropertiesSchema();
             }
 
             return Object.class;
@@ -338,6 +347,11 @@ public class JsonSchemaGenerator {
 
         // Subtype resolver for all plugins
         if(builder.build().getSchemaVersion() != SchemaVersion.DRAFT_2019_09) {
+            List<Class<? extends DataFilter<?>>> dataFilters = getRegisteredPlugins()
+                .stream()
+                .flatMap(registeredPlugin -> registeredPlugin.getDataFilters().stream())
+                .filter(Predicate.not(io.kestra.core.models.Plugin::isInternal))
+                .toList();
             builder.forTypesInGeneral()
                 .withSubtypeResolver((declaredType, context) -> {
                     TypeContext typeContext = context.getTypeContext();
@@ -377,6 +391,18 @@ public class JsonSchemaGenerator {
                             .filter(Predicate.not(io.kestra.core.models.Plugin::isInternal))
                             .flatMap(clz -> safelyResolveSubtype(declaredType, clz, typeContext).stream())
                             .toList();
+                    } else if (declaredType.getErasedType() == Chart.class) {
+                        return getRegisteredPlugins()
+                            .stream()
+                            .flatMap(registeredPlugin -> registeredPlugin.getCharts().stream())
+                            .filter(Predicate.not(io.kestra.core.models.Plugin::isInternal))
+                            .<ResolvedType>mapMulti((clz, consumer) -> {
+                                ParameterizedType chartAwareColumnDescriptor = (ParameterizedType) ((WildcardType) Arrays.stream(
+                                    ((ParameterizedType) Arrays.stream(clz.getTypeParameters()).findFirst().get().getBounds()[0])
+                                        .getActualTypeArguments()
+                                ).findFirst().get()).getUpperBounds()[0];
+                                dataFilters.forEach(dataFilter -> consumer.accept(typeContext.resolve(clz, typeContext.resolve(dataFilters.get(0), chartAwareColumnDescriptor.getRawType()))));
+                            }).toList();
                     }
                     return null;
                 });
